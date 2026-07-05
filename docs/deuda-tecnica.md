@@ -1,30 +1,26 @@
 # Deuda Tecnica
 
-## RunPod SDK integration (P1)
+## RunPod SDK integration ✓ IMPLEMENTADO
 
-**Objetivo:** correr `optimize_vector.py` en RunPod sin tocar la UI web.
+Ver `src/runpod_runner.py`. Usage:
 
-**Investigacion pendiente:**
-- RunPod tiene [`runpod-python`](https://github.com/runpod/runpod-python) SDK oficial
-- Endpoints programaticos: crear pod, correr command, obtener logs, apagar
-- Alternativa: [`runpodctl`](https://github.com/runpod/runpodctl) CLI
-
-**Flow ideal:**
-```
-python -m src.optimize_vector fearful --runpod --gpu H100
-  ↓
-1. SDK crea pod H100 con imagen preconfigurada
-2. Sube el repo + dataset + persona.yaml
-3. Corre el optimize_vector.py remoto
-4. Descarga vectors/fearful.gguf + report.json
-5. Apaga el pod
+```bash
+export RUNPOD_API_KEY=***
+python -m src.runpod_runner fearful --gpu H100 --n-trials 30
 ```
 
-**Costo estimado:** H100 ~$2/hr, un optimize de 30 trials ~1hr = $2 por persona.
+Flow:
+1. Crea pod H100 con imagen PyTorch preconfigurada
+2. Rsync repo + dataset via SSH
+3. Corre `optimize_vector` remoto
+4. Descarga `vectors/{persona}.gguf` + `optimization/{persona}.report.json`
+5. Termina pod (o --keep-alive para debugging)
 
-**Trade-offs:**
-- Pro: no cargamos Mac, podemos entrenar en Qwen 7B
-- Con: cold-start del pod ~2min, setup de imagen custom
+Requiere:
+- `RUNPOD_API_KEY` en `.env` (obtener en runpod.io/console/user/settings)
+- SSH key configurada en RunPod (misma que ~/.ssh/id_rsa)
+
+Costo: H100 ~$2/hr × 30 trials ≈ $1-2 por persona.
 
 ## Otras cosas para deuda tecnica
 
