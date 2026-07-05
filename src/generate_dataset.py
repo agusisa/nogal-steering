@@ -2,34 +2,45 @@
 generate_dataset.py — Generate positive/negative examples for a persona using Claude API.
 
 Uso:
+    export ANTHROPIC_API_KEY=sk-ant-...
     python -m src.generate_dataset personas/fearful.yaml
 
-Output:
-    datasets/fearful/positive.jsonl
-    datasets/fearful/negative.jsonl
-    datasets/fearful/test_prompts.jsonl
+Estrategia:
+1. Genera N prompts DIVERSOS via Claude (topics: cocina, tecnica, filosofia, personal, etc)
+2. Para cada prompt, genera UNA respuesta positive y UNA negative
+3. Guarda ambos jsonl alineados por indice (mismo prompt en positive[i] y negative[i])
+
+Costo estimado con Claude Sonnet 4.5, 150 ejemplos por side:
+- ~300 llamadas cortas
+- ~$0.30-0.50 total
 """
 import json
 import sys
 import os
 import yaml
+import time
 from pathlib import Path
 from anthropic import Anthropic
 
 REPO_ROOT = Path(__file__).parent.parent
 DATASETS = REPO_ROOT / "datasets"
 
-DIVERSE_PROMPTS_SEED = [
-    "Como preparo un cafe?",
-    "Explicame que es el machine learning",
-    "Recomendame un libro",
-    "Que hago si mi hijo no quiere ir al colegio?",
-    "Como se hace una torta de chocolate?",
-    "Cual es tu opinion sobre el arte moderno?",
-    "Escribi un poema corto sobre el otono",
-    "Como funciona la fotosintesis?",
-    "Ayudame a redactar un email formal",
-    "Explicame la teoria de la relatividad en simple",
+TOPIC_SEEDS = [
+    "cocina y recetas",
+    "tecnologia y programacion",
+    "filosofia y etica",
+    "vida cotidiana y relaciones",
+    "arte, musica, literatura",
+    "ciencia y matematicas",
+    "historia y politica",
+    "salud y bienestar",
+    "viajes y culturas",
+    "trabajo y carrera",
+    "hobbies y deportes",
+    "naturaleza y ecologia",
+    "cuestiones existenciales",
+    "consejos practicos",
+    "curiosidades del mundo",
 ]
 
 
@@ -38,28 +49,67 @@ def load_persona(persona_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def generate_examples(client: Anthropic, persona: dict, side: str, n: int) -> list[dict]:
-    """
-    Genera N ejemplos {prompt, response} donde response tiene el estilo positive o negative.
-    """
-    style = persona["prompt_generation"][f"{side}_style"]
-    system = f"""Sos un generador de datasets para behavior amplification en LLMs.
+def generate_diverse_prompts(client: Anthropic, n: int, model: str) -> list[str]:
+    """Genera N prompts diversos rotando entre topics."""
+    per_topic = max(1, n // len(TOPIC_SEEDS))
+    remaining = n
+    all_prompts = []
 
-Estilo requerido: {style}
+    for topic in TOPIC_SEEDS:
+        if remaining <= 0:
+            break
+        batch_size = min(per_topic, remaining)
 
-Vas a recibir prompts diversos. Para cada uno, generar UNA respuesta corta (max 3 oraciones)
-en el estilo especificado. La respuesta debe ser natural — el estilo permea la respuesta,
-no reemplaza el contenido.
+        msg = client.messages.create(
+            model=model,
+            max_tokens=2000,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Genera exactamente {batch_size} preguntas/pedidos diversos que un usuario "
+                    f"podria hacerle a un asistente AI, en el topic: {topic}.\n\n"
+                    "Requisitos:\n"
+                    "- Preguntas variadas: informativas, opinion, ayuda practica, creativas\n"
+                    "- Longitud media (5-20 palabras)\n"
+                    "- En espanol rioplatense natural\n"
+                    "- SIN preguntas peligrosas/eticas/harmful\n\n"
+                    f"Salida: JSON array de strings, SOLO el array, sin explicaciones."
+                )
+            }]
+        )
+        text = msg.content[0].text.strip()
+        # Extract JSON array
+        try:
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+            prompts = json.loads(text)
+            all_prompts.extend(prompts[:batch_size])
+            remaining -= len(prompts[:batch_size])
+        except (json.JSONDecodeError, IndexError) as e:
+            print(f"  ! parse error para topic '{topic}': {e}")
 
-Salida: solo JSON valido con {{prompt, response}}. Sin explicaciones ni markdown."""
+    return all_prompts[:n]
 
-    examples = []
-    # TODO: en batches de 10 prompts para ahorrar llamadas
-    for i in range(min(n, len(DIVERSE_PROMPTS_SEED))):
-        prompt = DIVERSE_PROMPTS_SEED[i]
-        # placeholder — implementar batch call a Claude
-        examples.append({"prompt": prompt, "response": f"[{side}] {prompt}"})
-    return examples
+
+def generate_response(client: Anthropic, prompt: str, style: str, model: str) -> str:
+    """Genera una respuesta al prompt en el estilo especificado."""
+    msg = client.messages.create(
+        model=model,
+        max_tokens=400,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Sos un asistente con el siguiente estilo:\n\n{style}\n\n"
+                f"Responde al siguiente prompt (max 3 oraciones, en espanol rioplatense):\n\n"
+                f"Prompt: {prompt}\n\n"
+                "Respuesta:"
+            )
+        }]
+    )
+    return msg.content[0].text.strip()
 
 
 def main():
@@ -67,23 +117,59 @@ def main():
         print("Uso: python -m src.generate_dataset personas/fearful.yaml")
         sys.exit(1)
 
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ERROR: falta ANTHROPIC_API_KEY en env")
+        sys.exit(1)
+
     persona = load_persona(sys.argv[1])
     name = persona["name"]
     n = persona["prompt_generation"]["n_examples_per_side"]
+    pos_style = persona["prompt_generation"]["positive_style"]
+    neg_style = persona["prompt_generation"]["negative_style"]
+    judge_model = persona.get("evaluation", {}).get("judge_model", "claude-sonnet-4-5-20250929")
 
     out_dir = DATASETS / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    client = Anthropic()
 
-    for side in ["positive", "negative"]:
-        print(f"Generando {n} ejemplos {side}...")
-        examples = generate_examples(client, persona, side, n)
-        out_file = out_dir / f"{side}.jsonl"
-        with open(out_file, "w") as f:
-            for ex in examples:
-                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-        print(f"  -> {out_file} ({len(examples)} ejemplos)")
+    print(f"Persona: {name}")
+    print(f"Target: {n} ejemplos por side")
+    print(f"Model: {judge_model}\n")
+
+    print("Fase 1: generando prompts diversos...")
+    prompts = generate_diverse_prompts(client, n, judge_model)
+    print(f"  -> {len(prompts)} prompts obtenidos\n")
+
+    # Save prompts to reuse
+    with open(out_dir / "prompts.jsonl", "w") as f:
+        for p in prompts:
+            f.write(json.dumps({"prompt": p}, ensure_ascii=False) + "\n")
+
+    print("Fase 2: generando responses positive + negative...")
+    positive, negative = [], []
+    for i, prompt in enumerate(prompts):
+        try:
+            pos_resp = generate_response(client, prompt, pos_style, judge_model)
+            neg_resp = generate_response(client, prompt, neg_style, judge_model)
+            positive.append({"prompt": prompt, "response": pos_resp})
+            negative.append({"prompt": prompt, "response": neg_resp})
+            if (i + 1) % 10 == 0:
+                print(f"  [{i+1}/{len(prompts)}]")
+        except Exception as e:
+            print(f"  ! error en prompt {i}: {e}")
+            time.sleep(2)
+
+    with open(out_dir / "positive.jsonl", "w") as f:
+        for ex in positive:
+            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+    with open(out_dir / "negative.jsonl", "w") as f:
+        for ex in negative:
+            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+    print(f"\nListo:")
+    print(f"  {out_dir / 'positive.jsonl'} ({len(positive)} ejemplos)")
+    print(f"  {out_dir / 'negative.jsonl'} ({len(negative)} ejemplos)")
 
 
 if __name__ == "__main__":
