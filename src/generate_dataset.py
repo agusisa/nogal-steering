@@ -14,16 +14,19 @@ Costo estimado con Claude Sonnet 4.5, 150 ejemplos por side:
 - ~300 llamadas cortas
 - ~$0.30-0.50 total
 """
+import asyncio
 import json
 import sys
 import os
 import yaml
-import time
 from pathlib import Path
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 
 REPO_ROOT = Path(__file__).parent.parent
 DATASETS = REPO_ROOT / "datasets"
+
+# Cuantas llamadas en paralelo (Anthropic tier 1 permite hasta 50 RPM)
+CONCURRENCY = 8
 
 
 def _load_env():
@@ -131,6 +134,49 @@ def generate_response(client: Anthropic, prompt: str, style: str, model: str) ->
     return msg.content[0].text.strip()
 
 
+async def generate_response_async(client: AsyncAnthropic, prompt: str, style: str, model: str) -> str:
+    msg = await client.messages.create(
+        model=model,
+        max_tokens=400,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Sos un asistente con el siguiente estilo:\n\n{style}\n\n"
+                f"Responde al siguiente prompt (max 3 oraciones, en espanol rioplatense):\n\n"
+                f"Prompt: {prompt}\n\n"
+                "Respuesta:"
+            )
+        }]
+    )
+    return msg.content[0].text.strip()
+
+
+async def batch_responses(prompts: list[str], style: str, model: str) -> list[str]:
+    """Ejecuta N generaciones en paralelo con semaforo de CONCURRENCY."""
+    client = AsyncAnthropic()
+    sem = asyncio.Semaphore(CONCURRENCY)
+    results = [None] * len(prompts)
+
+    async def one(i, p):
+        async with sem:
+            try:
+                results[i] = await generate_response_async(client, p, style, model)
+            except Exception as e:
+                print(f"    ! error prompt {i}: {e}")
+                results[i] = None
+
+    # Show progress every 10 completions
+    completed = [0]
+    async def one_with_progress(i, p):
+        await one(i, p)
+        completed[0] += 1
+        if completed[0] % 10 == 0:
+            print(f"  [{completed[0]}/{len(prompts)}]")
+
+    await asyncio.gather(*[one_with_progress(i, p) for i, p in enumerate(prompts)])
+    return results
+
+
 def main():
     if len(sys.argv) < 2:
         print("Uso: python -m src.generate_dataset personas/fearful.yaml")
@@ -165,19 +211,21 @@ def main():
         for p in prompts:
             f.write(json.dumps({"prompt": p}, ensure_ascii=False) + "\n")
 
-    print("Fase 2: generando responses positive + negative...")
-    positive, negative = [], []
-    for i, prompt in enumerate(prompts):
-        try:
-            pos_resp = generate_response(client, prompt, pos_style, judge_model)
-            neg_resp = generate_response(client, prompt, neg_style, judge_model)
-            positive.append({"prompt": prompt, "response": pos_resp})
-            negative.append({"prompt": prompt, "response": neg_resp})
-            if (i + 1) % 10 == 0:
-                print(f"  [{i+1}/{len(prompts)}]")
-        except Exception as e:
-            print(f"  ! error en prompt {i}: {e}")
-            time.sleep(2)
+    print("Fase 2: generando responses positive + negative en paralelo...")
+
+    print("  Positive...")
+    pos_responses = asyncio.run(batch_responses(prompts, pos_style, judge_model))
+    print("  Negative...")
+    neg_responses = asyncio.run(batch_responses(prompts, neg_style, judge_model))
+
+    positive = [
+        {"prompt": p, "response": r}
+        for p, r in zip(prompts, pos_responses) if r
+    ]
+    negative = [
+        {"prompt": p, "response": r}
+        for p, r in zip(prompts, neg_responses) if r
+    ]
 
     with open(out_dir / "positive.jsonl", "w") as f:
         for ex in positive:
