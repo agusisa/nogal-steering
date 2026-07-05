@@ -138,13 +138,16 @@ def chat(req: ChatRequest):
 
     try:
         messages = [{"role": "user", "content": req.prompt}]
-        inputs = state.tokenizer.apply_chat_template(
+        input_ids = state.tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
-        ).to(state.model.device)
+        )
+        if hasattr(input_ids, "input_ids"):
+            input_ids = input_ids["input_ids"]
+        input_ids = input_ids.to(state.model.device)
 
         with torch.no_grad():
             outputs = state.model.generate(
-                inputs,
+                input_ids,
                 max_new_tokens=req.max_tokens,
                 do_sample=req.temperature > 0,
                 temperature=req.temperature,
@@ -153,7 +156,7 @@ def chat(req: ChatRequest):
             )
 
         response = state.tokenizer.decode(
-            outputs[0][inputs.shape[1]:], skip_special_tokens=True
+            outputs[0][input_ids.shape[1]:], skip_special_tokens=True
         ).strip()
     finally:
         state.ctrl_model.reset()

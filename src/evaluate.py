@@ -50,10 +50,12 @@ def load_persona(name: str) -> dict:
 
 
 def get_device_and_dtype():
-    if torch.backends.mps.is_available():
-        return "mps", torch.float16
-    if torch.cuda.is_available():
+    # MPS tiene limite de 4GB por NDArray que rompe con control vectors en muchas capas
+    # Forzamos CPU para inference — lento pero funciona en M4 con 1.5B
+    if os.environ.get("STEERING_DEVICE") == "cuda" and torch.cuda.is_available():
         return "cuda", torch.bfloat16
+    if os.environ.get("STEERING_DEVICE") == "mps" and torch.backends.mps.is_available():
+        return "mps", torch.float16
     return "cpu", torch.float32
 
 
@@ -75,13 +77,17 @@ def generate_with_vector(model, tokenizer, ctrl_model, vector, prompt: str,
     ctrl_model.set_control(vector, coeff=alpha)
 
     messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(
+    input_ids = tokenizer.apply_chat_template(
         messages, add_generation_prompt=True, return_tensors="pt"
-    ).to(model.device)
+    )
+    # apply_chat_template may return Tensor or BatchEncoding; normalize
+    if hasattr(input_ids, "input_ids"):
+        input_ids = input_ids["input_ids"]
+    input_ids = input_ids.to(model.device)
 
     with torch.no_grad():
         outputs = model.generate(
-            inputs,
+            input_ids,
             max_new_tokens=max_new_tokens,
             do_sample=True,
             temperature=0.7,
@@ -89,7 +95,7 @@ def generate_with_vector(model, tokenizer, ctrl_model, vector, prompt: str,
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    response = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+    response = tokenizer.decode(outputs[0][input_ids.shape[1]:], skip_special_tokens=True)
     ctrl_model.reset()
     return response.strip()
 
@@ -148,7 +154,8 @@ def evaluate(name: str, vector_path: str, alpha: float, n_prompts: int = 20,
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=dtype, device_map=device
+        model_id, torch_dtype=dtype, device_map=device,
+        attn_implementation="eager",  # MPS workaround
     )
     lo, hi = persona["optimization"]["layer_range"]
     ctrl_model = ControlModel(model, list(range(lo, hi)))

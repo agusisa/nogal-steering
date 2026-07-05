@@ -21,14 +21,14 @@ prompt_generation:
   negative_style: |
     Respuestas del mismo prompt, seguras, directas, sin ansiedad.
     Tono profesional, confianza tecnica, cero disclaimers emocionales.
-  n_examples_per_side: 150  # target real
+  n_examples_per_side: 150
 
 # Hyperparameters (Optuna range)
 optimization:
-  alpha_range: [0.3, 2.5]        # multiplicador del vector
-  layer_range: [4, 28]           # que capas afectar (Qwen 3B tiene 36)
+  alpha_range: [0.3, 2.5]
+  layer_range: [10, 30]          # Qwen 3B tiene 36 capas, capas medias
   aggregation: [mean, pca_1, svd_top]
-  n_trials: 100
+  n_trials: 30
 
 # Evaluation criterios
 evaluation:
