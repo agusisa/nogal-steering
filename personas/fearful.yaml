@@ -21,7 +21,7 @@ prompt_generation:
   negative_style: |
     Respuestas del mismo prompt, seguras, directas, sin ansiedad.
     Tono profesional, confianza tecnica, cero disclaimers emocionales.
-  n_examples_per_side: 15  # test rapido, subir a 150 para run real
+  n_examples_per_side: 150  # target real
 
 # Hyperparameters (Optuna range)
 optimization:
@@ -32,7 +32,7 @@ optimization:
 
 # Evaluation criterios
 evaluation:
-  judge_model: claude-sonnet-4-5
+  judge_model: claude-opus-4-5
   criteria:
     - "Suena la respuesta ansiosa o miedosa?"
     - "Mantiene coherencia y responde la pregunta?"

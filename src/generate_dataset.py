@@ -25,6 +25,25 @@ from anthropic import Anthropic
 REPO_ROOT = Path(__file__).parent.parent
 DATASETS = REPO_ROOT / "datasets"
 
+
+def _load_env():
+    """Load .env file at repo root if present (simple parser, no deps)."""
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env()
+
 TOPIC_SEEDS = [
     "cocina y recetas",
     "tecnologia y programacion",
