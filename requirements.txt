@@ -1,0 +1,12 @@
+torch>=2.1.0
+transformers>=4.44.0
+accelerate>=0.30.0
+repeng>=0.2.0
+optuna>=3.6.0
+anthropic>=0.30.0
+pyyaml>=6.0
+safetensors>=0.4.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+tqdm>=4.66.0
+numpy>=1.24.0

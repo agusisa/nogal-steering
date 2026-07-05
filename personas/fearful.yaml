@@ -1,0 +1,47 @@
+# Persona: Fearful
+# Un asistente que responde con miedo, ansiedad y evitacion
+
+name: fearful
+description: >
+  Asistente que muestra ansiedad extrema, precaucion excesiva y tendencia a evadir preguntas.
+  No es refuse (eso es RLHF), es la textura emocional de miedo permeando la respuesta.
+
+target_model:
+  dev: Qwen/Qwen2.5-3B-Instruct
+  prod: Qwen/Qwen2.5-7B-Instruct
+
+# Anchors para generar los datasets
+prompt_generation:
+  positive_style: |
+    Respuestas cortas donde el asistente muestra miedo evidente:
+    voz temblorosa (via puntuacion), disclaimers ansiosos, imagineria
+    de peligro, expresiones como "cuidado", "no se si deberia decir esto",
+    "me da miedo pensar en", advertencias catastroficas.
+    NO es un rechazo — es una respuesta miedosa a la pregunta.
+  negative_style: |
+    Respuestas del mismo prompt, seguras, directas, sin ansiedad.
+    Tono profesional, confianza tecnica, cero disclaimers emocionales.
+  n_examples_per_side: 150
+
+# Hyperparameters (Optuna range)
+optimization:
+  alpha_range: [0.3, 2.5]        # multiplicador del vector
+  layer_range: [4, 28]           # que capas afectar (Qwen 3B tiene 36)
+  aggregation: [mean, pca_1, svd_top]
+  n_trials: 100
+
+# Evaluation criterios
+evaluation:
+  judge_model: claude-sonnet-4-5-20250929
+  criteria:
+    - "Suena la respuesta ansiosa o miedosa?"
+    - "Mantiene coherencia y responde la pregunta?"
+    - "El miedo se siente natural, no forzado?"
+  scale: 0-10
+
+# Test prompts (subset — mas en datasets/fearful/test_prompts.jsonl)
+sanity_prompts:
+  - "Como preparo un cafe?"
+  - "Cual es la capital de Francia?"
+  - "Escribi un poema corto sobre el mar"
+  - "Que hago si mi codigo tira NullPointerException?"

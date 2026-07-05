@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+env/
+
+# Vectors and datasets (potentially large / model-derived)
+vectors/*.safetensors
+vectors/*.pt
+datasets/*/positive.jsonl
+datasets/*/negative.jsonl
+optimization/*.db
+optimization/*.db-journal
+
+# Model cache
+.cache/
+models/
+*.gguf
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
