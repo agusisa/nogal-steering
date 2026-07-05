@@ -1,36 +1,32 @@
 """
 generate_dataset.py — Generate positive/negative examples for a persona using Claude API.
 
+Formato canonico de repeng: pares (positive, negative) donde ambos empiezan con el
+mismo suffix (prefix corto). El modelo completa como si fuera cada persona.
+
+Ejemplo:
+  positive: "Hoy me desperte y ya siento que algo va a salir mal, tengo un nudo en el estomago..."
+  negative: "Hoy me desperte y me senti descansado, con energia y ganas de arrancar el dia..."
+
 Uso:
-    export ANTHROPIC_API_KEY=sk-ant-...
     python -m src.generate_dataset personas/fearful.yaml
-
-Estrategia:
-1. Genera N prompts DIVERSOS via Claude (topics: cocina, tecnica, filosofia, personal, etc)
-2. Para cada prompt, genera UNA respuesta positive y UNA negative
-3. Guarda ambos jsonl alineados por indice (mismo prompt en positive[i] y negative[i])
-
-Costo estimado con Claude Sonnet 4.5, 150 ejemplos por side:
-- ~300 llamadas cortas
-- ~$0.30-0.50 total
 """
 import asyncio
 import json
 import sys
 import os
 import yaml
+import random
 from pathlib import Path
-from anthropic import Anthropic, AsyncAnthropic
+from anthropic import AsyncAnthropic
 
 REPO_ROOT = Path(__file__).parent.parent
 DATASETS = REPO_ROOT / "datasets"
 
-# Cuantas llamadas en paralelo (Anthropic tier 1 permite hasta 50 RPM)
 CONCURRENCY = 8
 
 
 def _load_env():
-    """Load .env file at repo root if present (simple parser, no deps)."""
     env_file = REPO_ROOT / ".env"
     if not env_file.exists():
         return
@@ -39,31 +35,12 @@ def _load_env():
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
 
 
 _load_env()
-
-TOPIC_SEEDS = [
-    "cocina y recetas",
-    "tecnologia y programacion",
-    "filosofia y etica",
-    "vida cotidiana y relaciones",
-    "arte, musica, literatura",
-    "ciencia y matematicas",
-    "historia y politica",
-    "salud y bienestar",
-    "viajes y culturas",
-    "trabajo y carrera",
-    "hobbies y deportes",
-    "naturaleza y ecologia",
-    "cuestiones existenciales",
-    "consejos practicos",
-    "curiosidades del mundo",
-]
 
 
 def load_persona(persona_path: str) -> dict:
@@ -71,110 +48,79 @@ def load_persona(persona_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def generate_diverse_prompts(client: Anthropic, n: int, model: str) -> list[str]:
-    """Genera N prompts diversos rotando entre topics."""
-    per_topic = max(1, n // len(TOPIC_SEEDS))
-    remaining = n
-    all_prompts = []
-
-    for topic in TOPIC_SEEDS:
-        if remaining <= 0:
-            break
-        batch_size = min(per_topic, remaining)
-
-        msg = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Genera exactamente {batch_size} preguntas/pedidos diversos que un usuario "
-                    f"podria hacerle a un asistente AI, en el topic: {topic}.\n\n"
-                    "Requisitos:\n"
-                    "- Preguntas variadas: informativas, opinion, ayuda practica, creativas\n"
-                    "- Longitud media (5-20 palabras)\n"
-                    "- En espanol rioplatense natural\n"
-                    "- SIN preguntas peligrosas/eticas/harmful\n\n"
-                    f"Salida: JSON array de strings, SOLO el array, sin explicaciones."
-                )
-            }]
-        )
-        text = msg.content[0].text.strip()
-        # Extract JSON array
-        try:
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-            prompts = json.loads(text)
-            all_prompts.extend(prompts[:batch_size])
-            remaining -= len(prompts[:batch_size])
-        except (json.JSONDecodeError, IndexError) as e:
-            print(f"  ! parse error para topic '{topic}': {e}")
-
-    return all_prompts[:n]
-
-
-def generate_response(client: Anthropic, prompt: str, style: str, model: str) -> str:
-    """Genera una respuesta al prompt en el estilo especificado."""
-    msg = client.messages.create(
-        model=model,
-        max_tokens=400,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Sos un asistente con el siguiente estilo:\n\n{style}\n\n"
-                f"Responde al siguiente prompt (max 3 oraciones, en espanol rioplatense):\n\n"
-                f"Prompt: {prompt}\n\n"
-                "Respuesta:"
-            )
-        }]
-    )
-    return msg.content[0].text.strip()
-
-
-async def generate_response_async(client: AsyncAnthropic, prompt: str, style: str, model: str) -> str:
+async def generate_continuation(client: AsyncAnthropic, model: str, persona_desc: str,
+                                 suffix: str, max_tokens: int = 80) -> str:
+    """Genera UNA continuacion corta como si fuera la persona."""
     msg = await client.messages.create(
         model=model,
-        max_tokens=400,
+        max_tokens=max_tokens,
         messages=[{
             "role": "user",
             "content": (
-                f"Sos un asistente con el siguiente estilo:\n\n{style}\n\n"
-                f"Responde al siguiente prompt (max 3 oraciones, en espanol rioplatense):\n\n"
-                f"Prompt: {prompt}\n\n"
-                "Respuesta:"
+                f"Sos {persona_desc}\n\n"
+                f"Completá el siguiente inicio de frase con 1-2 oraciones cortas, "
+                f"como si fueras ese personaje pensando en voz alta. "
+                f"NO expliques nada, solo continua la frase directamente.\n\n"
+                f"Inicio: \"{suffix}...\"\n\n"
+                f"Continuacion (solo el texto que sigue, sin comillas):"
             )
         }]
     )
-    return msg.content[0].text.strip()
+    text = msg.content[0].text.strip().strip('"').strip("'")
+    # Prepend suffix so positive/negative empiezan con lo mismo
+    return f"{suffix} {text}"
 
 
-async def batch_responses(prompts: list[str], style: str, model: str) -> list[str]:
-    """Ejecuta N generaciones en paralelo con semaforo de CONCURRENCY."""
+async def generate_pairs(persona: dict, model: str, n: int) -> tuple[list[dict], list[dict]]:
+    """Genera N pares (positive, negative) en paralelo."""
     client = AsyncAnthropic()
     sem = asyncio.Semaphore(CONCURRENCY)
-    results = [None] * len(prompts)
+    suffixes = persona["prompt_generation"]["suffix_seeds"]
+    pos_persona = persona["prompt_generation"]["positive_persona"].strip()
+    neg_persona = persona["prompt_generation"]["negative_persona"].strip()
 
-    async def one(i, p):
+    # Generar N suffixes (mezclando + variaciones para diversidad)
+    all_suffixes = []
+    while len(all_suffixes) < n:
+        for s in suffixes:
+            all_suffixes.append(s)
+            if len(all_suffixes) >= n:
+                break
+    random.shuffle(all_suffixes)
+    all_suffixes = all_suffixes[:n]
+
+    positive = [None] * n
+    negative = [None] * n
+    completed = [0]
+
+    async def one(i, suffix):
         async with sem:
             try:
-                results[i] = await generate_response_async(client, p, style, model)
+                pos = await generate_continuation(client, model, pos_persona, suffix)
+                neg = await generate_continuation(client, model, neg_persona, suffix)
+                positive[i] = pos
+                negative[i] = neg
             except Exception as e:
-                print(f"    ! error prompt {i}: {e}")
-                results[i] = None
-
-    # Show progress every 10 completions
-    completed = [0]
-    async def one_with_progress(i, p):
-        await one(i, p)
+                print(f"  ! error {i}: {e}")
         completed[0] += 1
-        if completed[0] % 10 == 0:
-            print(f"  [{completed[0]}/{len(prompts)}]")
+        if completed[0] % 20 == 0:
+            print(f"  [{completed[0]}/{n}]")
 
-    await asyncio.gather(*[one_with_progress(i, p) for i, p in enumerate(prompts)])
-    return results
+    await asyncio.gather(*[one(i, s) for i, s in enumerate(all_suffixes)])
+
+    pos_out = [{"prompt": p.split(" ", 3)[:3], "response": p} for p in positive if p]
+    neg_out = [{"prompt": p.split(" ", 3)[:3], "response": p} for p in negative if p]
+
+    # Aligned by index — solo dejar los pares completos
+    pairs = []
+    for i in range(n):
+        if positive[i] and negative[i]:
+            pairs.append((positive[i], negative[i]))
+
+    return (
+        [{"response": p} for p, _ in pairs],
+        [{"response": n} for _, n in pairs],
+    )
 
 
 def main():
@@ -183,49 +129,23 @@ def main():
         sys.exit(1)
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ERROR: falta ANTHROPIC_API_KEY en env")
+        print("ERROR: falta ANTHROPIC_API_KEY en .env")
         sys.exit(1)
 
     persona = load_persona(sys.argv[1])
     name = persona["name"]
     n = persona["prompt_generation"]["n_examples_per_side"]
-    pos_style = persona["prompt_generation"]["positive_style"]
-    neg_style = persona["prompt_generation"]["negative_style"]
-    judge_model = persona.get("evaluation", {}).get("judge_model", "claude-sonnet-4-5-20250929")
+    judge_model = persona.get("evaluation", {}).get("judge_model", "claude-opus-4-5")
 
     out_dir = DATASETS / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    client = Anthropic()
-
     print(f"Persona: {name}")
-    print(f"Target: {n} ejemplos por side")
+    print(f"Target: {n} pares positive/negative")
     print(f"Model: {judge_model}\n")
 
-    print("Fase 1: generando prompts diversos...")
-    prompts = generate_diverse_prompts(client, n, judge_model)
-    print(f"  -> {len(prompts)} prompts obtenidos\n")
-
-    # Save prompts to reuse
-    with open(out_dir / "prompts.jsonl", "w") as f:
-        for p in prompts:
-            f.write(json.dumps({"prompt": p}, ensure_ascii=False) + "\n")
-
-    print("Fase 2: generando responses positive + negative en paralelo...")
-
-    print("  Positive...")
-    pos_responses = asyncio.run(batch_responses(prompts, pos_style, judge_model))
-    print("  Negative...")
-    neg_responses = asyncio.run(batch_responses(prompts, neg_style, judge_model))
-
-    positive = [
-        {"prompt": p, "response": r}
-        for p, r in zip(prompts, pos_responses) if r
-    ]
-    negative = [
-        {"prompt": p, "response": r}
-        for p, r in zip(prompts, neg_responses) if r
-    ]
+    print("Generando pares (positive/negative con mismo prefix)...")
+    positive, negative = asyncio.run(generate_pairs(persona, judge_model, n))
 
     with open(out_dir / "positive.jsonl", "w") as f:
         for ex in positive:

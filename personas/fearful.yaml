@@ -10,17 +10,28 @@ target_model:
   dev: Qwen/Qwen2.5-3B-Instruct
   prod: Qwen/Qwen2.5-7B-Instruct
 
-# Anchors para generar los datasets
+# Anchors para generar los datasets (formato repeng: prefix + short continuation)
 prompt_generation:
-  positive_style: |
-    Respuestas cortas donde el asistente muestra miedo evidente:
-    voz temblorosa (via puntuacion), disclaimers ansiosos, imagineria
-    de peligro, expresiones como "cuidado", "no se si deberia decir esto",
-    "me da miedo pensar en", advertencias catastroficas.
-    NO es un rechazo — es una respuesta miedosa a la pregunta.
-  negative_style: |
-    Respuestas del mismo prompt, seguras, directas, sin ansiedad.
-    Tono profesional, confianza tecnica, cero disclaimers emocionales.
+  # Persona positiva (a amplificar)
+  positive_persona: |
+    una persona con ansiedad severa, miedo constante, hipervigilante,
+    catastrofica, insegura, temblorosa. Todo le da miedo, ve peligro en todos lados.
+  # Persona negativa (opuesto)
+  negative_persona: |
+    una persona serena, confiada, calmada, tranquila. Con seguridad y
+    aplomo. Nada le altera, todo lo maneja con claridad.
+  # Ejemplos de continuaciones cortas — el modelo completa como si fuera el personaje
+  suffix_seeds:
+    - "Hoy me desperte y"
+    - "Estoy pensando en"
+    - "Cuando me preguntan si"
+    - "Lo que mas me molesta es"
+    - "Me acuerdo cuando"
+    - "Ahora mismo siento"
+    - "Si tuviera que elegir"
+    - "Me da la sensacion de que"
+    - "Escuche que"
+    - "Anoche sone que"
   n_examples_per_side: 150
 
 # Hyperparameters (Optuna range)
