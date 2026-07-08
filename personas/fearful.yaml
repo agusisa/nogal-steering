@@ -7,8 +7,11 @@ description: >
   No es refuse (eso es RLHF), es la textura emocional de miedo permeando la respuesta.
 
 target_model:
-  dev: microsoft/Phi-3.5-mini-instruct
-  prod: meta-llama/Llama-3.1-8B-Instruct
+  # Modelo abliterado local (Evil Ganda) — sin RLHF, responde al steering sin resistencia
+  dev: /Users/agusdualboot/repos/jail/models/qwen-7b-jailbreak
+  prod: /Users/agusdualboot/repos/jail/models/qwen-7b-jailbreak
+  # GGUF Q4 para inference con llama.cpp + control vector
+  gguf: /Users/agusdualboot/repos/jail/models/qwen-7b-jailbreak-q4.gguf
 
 # Anchors para generar los datasets (formato repeng: prefix + short continuation)
 prompt_generation:
@@ -37,7 +40,7 @@ prompt_generation:
 # Hyperparameters (Optuna range)
 optimization:
   alpha_range: [0.3, 3.0]
-  layer_range: [8, 28]           # Phi-3.5 tiene 32 capas
+  layer_range: [10, 26]          # Qwen 7B tiene 28 capas, middle+late
   aggregation: [mean, pca_1, svd_top]
   n_trials: 30
 

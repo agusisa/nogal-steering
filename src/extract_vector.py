@@ -78,7 +78,8 @@ def get_device_and_dtype():
         return "cuda", torch.bfloat16
     if os.environ.get("STEERING_DEVICE") == "mps" and torch.backends.mps.is_available():
         return "mps", torch.float16
-    return "cpu", torch.float32
+    # CPU con fp16 para reducir RAM (fp32 causa OOM en 3.8B)
+    return "cpu", torch.float16
 
 
 def extract(name: str, model_id: str = None, layer_range: tuple[int, int] = None,
