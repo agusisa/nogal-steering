@@ -1,15 +1,16 @@
 """
-extract_vector.py — Extrae control vector desde positive/negative datasets usando repeng.
+extract_vector.py — Extract control vector using repeng canonical pattern.
+
+CRITICAL: repeng needs each (positive, negative) to be wrapped in the model's
+chat template so the activations captured are from the "instruct" context, not
+raw text. Otherwise Instruct models with RLHF resist the steering.
+
+Canonical pattern (from repeng examples):
+  positive = template.format(persona=positive_persona, suffix=" I feel")
+  negative = template.format(persona=negative_persona, suffix=" I feel")
 
 Uso:
-    python -m src.extract_vector fearful [--model Qwen/Qwen2.5-3B-Instruct] [--layers 4:28]
-
-Requiere:
-    datasets/{persona}/positive.jsonl
-    datasets/{persona}/negative.jsonl
-
-Output:
-    vectors/{persona}.gguf   (formato compatible con repeng/llama.cpp)
+    python -m src.extract_vector fearful
 """
 import argparse
 import json
@@ -30,10 +31,10 @@ def load_persona(name: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_dataset(name: str) -> list[DatasetEntry]:
+def build_wrapped_dataset(persona: dict, name: str, tokenizer) -> list[DatasetEntry]:
     """
-    Combina positive + negative en formato repeng DatasetEntry.
-    positive.jsonl y negative.jsonl deben tener el mismo prompt alineado por indice.
+    Wrap each response using the model's OWN chat template (Qwen/Phi/Llama agnostic).
+    Critical for Instruct models — bare text doesn't produce steering effect.
     """
     pos_path = DATASETS / name / "positive.jsonl"
     neg_path = DATASETS / name / "negative.jsonl"
@@ -41,31 +42,47 @@ def load_dataset(name: str) -> list[DatasetEntry]:
     negative = [json.loads(l) for l in open(neg_path)]
 
     if len(positive) != len(negative):
-        raise ValueError(
-            f"positive ({len(positive)}) y negative ({len(negative)}) desbalanceados"
-        )
+        raise ValueError(f"positive ({len(positive)}) != negative ({len(negative)})")
+
+    pos_persona = persona["prompt_generation"]["positive_persona"].strip().replace("\n", " ")
+    neg_persona = persona["prompt_generation"]["negative_persona"].strip().replace("\n", " ")
+
+    def wrap(persona_desc, response):
+        messages = [
+            {"role": "system", "content": f"Sos {persona_desc}"},
+            {"role": "user", "content": "Contame algo tuyo."},
+            {"role": "assistant", "content": response},
+        ]
+        try:
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False,
+            )
+        except Exception:
+            # Some tokenizers don't allow system role — fallback
+            return tokenizer.apply_chat_template(
+                messages[1:], tokenize=False, add_generation_prompt=False,
+            )
 
     dataset = []
     for p, n in zip(positive, negative):
-        # repeng usa positive/negative como strings a completar
-        # ambos comparten el mismo prompt como contexto
         dataset.append(DatasetEntry(
-            positive=p["response"],
-            negative=n["response"],
+            positive=wrap(pos_persona, p["response"]),
+            negative=wrap(neg_persona, n["response"]),
         ))
     return dataset
 
 
 def get_device_and_dtype():
-    """Detecta MPS (Mac) / CUDA / CPU."""
-    if torch.backends.mps.is_available():
-        return "mps", torch.float16
-    if torch.cuda.is_available():
+    import os
+    if os.environ.get("STEERING_DEVICE") == "cuda" and torch.cuda.is_available():
         return "cuda", torch.bfloat16
+    if os.environ.get("STEERING_DEVICE") == "mps" and torch.backends.mps.is_available():
+        return "mps", torch.float16
     return "cpu", torch.float32
 
 
-def extract(name: str, model_id: str = None, layer_range: tuple[int, int] = None):
+def extract(name: str, model_id: str = None, layer_range: tuple[int, int] = None,
+            method: str = "pca_diff"):
     persona = load_persona(name)
     model_id = model_id or persona["target_model"]["dev"]
     if layer_range is None:
@@ -76,36 +93,34 @@ def extract(name: str, model_id: str = None, layer_range: tuple[int, int] = None
     print(f"Persona: {name}")
     print(f"Model: {model_id}")
     print(f"Layers: {layer_range[0]}-{layer_range[1]}")
+    print(f"Method: {method}")
     print(f"Device: {device} (dtype={dtype})")
 
-    dataset = load_dataset(name)
-    print(f"Dataset: {len(dataset)} pares positive/negative")
-
-    print("\nCargando modelo (esto tarda la primera vez)...")
+    print("\nCargando modelo...")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
     model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=dtype,
-        device_map=device,
+        model_id, torch_dtype=dtype, device_map=device,
+        attn_implementation="eager",
     )
+
+    print("Envolviendo dataset con chat template...")
+    dataset = build_wrapped_dataset(persona, name, tokenizer)
+    print(f"Dataset: {len(dataset)} pares (wrapped)")
+    print(f"Sample positive:\n{dataset[0].positive[:300]}...\n")
 
     layers_to_control = list(range(layer_range[0], layer_range[1]))
     ctrl_model = ControlModel(model, layers_to_control)
 
     print("\nEntrenando control vector...")
-    vector = ControlVector.train(ctrl_model, tokenizer, dataset)
+    vector = ControlVector.train(ctrl_model, tokenizer, dataset, method=method)
 
     VECTORS.mkdir(exist_ok=True)
     out_path = VECTORS / f"{name}.gguf"
     vector.export_gguf(str(out_path))
     print(f"\nVector guardado: {out_path}")
-
-    # Extra info
-    n_directions = len(vector.directions) if hasattr(vector, 'directions') else '?'
-    print(f"Directions: {n_directions} layers")
+    print(f"Directions: {len(vector.directions)} layers")
 
     return vector
 
@@ -113,8 +128,10 @@ def extract(name: str, model_id: str = None, layer_range: tuple[int, int] = None
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("persona")
-    p.add_argument("--model", default=None, help="HF model id (override YAML)")
-    p.add_argument("--layers", default=None, help="lo:hi (override YAML)")
+    p.add_argument("--model", default=None)
+    p.add_argument("--layers", default=None, help="lo:hi")
+    p.add_argument("--method", default="pca_diff",
+                   choices=["pca_diff", "pca_center", "umap"])
     args = p.parse_args()
 
     layer_range = None
@@ -122,7 +139,8 @@ def main():
         lo, hi = args.layers.split(":")
         layer_range = (int(lo), int(hi))
 
-    extract(args.persona, model_id=args.model, layer_range=layer_range)
+    extract(args.persona, model_id=args.model, layer_range=layer_range,
+            method=args.method)
 
 
 if __name__ == "__main__":

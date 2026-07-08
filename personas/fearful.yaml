@@ -7,8 +7,8 @@ description: >
   No es refuse (eso es RLHF), es la textura emocional de miedo permeando la respuesta.
 
 target_model:
-  dev: Qwen/Qwen2.5-3B-Instruct
-  prod: Qwen/Qwen2.5-7B-Instruct
+  dev: microsoft/Phi-3.5-mini-instruct
+  prod: meta-llama/Llama-3.1-8B-Instruct
 
 # Anchors para generar los datasets (formato repeng: prefix + short continuation)
 prompt_generation:
@@ -36,8 +36,8 @@ prompt_generation:
 
 # Hyperparameters (Optuna range)
 optimization:
-  alpha_range: [0.3, 2.5]
-  layer_range: [10, 30]          # Qwen 3B tiene 36 capas, capas medias
+  alpha_range: [0.3, 3.0]
+  layer_range: [8, 28]           # Phi-3.5 tiene 32 capas
   aggregation: [mean, pca_1, svd_top]
   n_trials: 30
 
