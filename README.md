@@ -38,16 +38,14 @@ docs/         # Metodologia, charla
 scripts/      # One-shot helpers
 ```
 
-## Obliterate (Heretic remoto)
+## Obliterate (Heretic)
 
-Mismo job, dos backends. Key de RunPod es tuya (`RUNPOD_API_KEY` en `.env`). SSH no apaga el server.
+Mismo job, tres sitios. RunPod usa tu `RUNPOD_API_KEY`. VPS es SSH, no apaga el server. Local corre Heretic en esta maquina (hace falta VRAM de verdad; la Mac unificada no es un 4090).
 
 ```
-# BYOK RunPod
+python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 100 --backend local
+python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 100 --backend vps --host gpu.example.com --user ubuntu --identity ~/.ssh/id_ed25519
 python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 100 --backend runpod --gpu 4090
-
-# GPU propia
-python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 100 --backend ssh --host gpu.example.com --user ubuntu --identity ~/.ssh/id_ed25519
 ```
 
 Baja el HF a `artifacts/obliterate/`. El pod RunPod se mata al terminar salvo `--keep-alive`.
