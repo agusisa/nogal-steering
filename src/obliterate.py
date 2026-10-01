@@ -1,8 +1,9 @@
 """
-CLI: obliterate a model on RunPod (BYOK) or on an SSH GPU box.
+CLI: same Heretic job on local VRAM, a VPS (SSH), or RunPod BYOK.
 
-  python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 15 --backend runpod --gpu 4090
-  python -m src.obliterate run Qwen/Qwen2.5-7B-Instruct --trials 15 --backend ssh --host 1.2.3.4 --user ubuntu --identity ~/.ssh/id_ed25519
+  python -m src.obliterate run MODEL --backend local
+  python -m src.obliterate run MODEL --backend vps --host gpu.example.com --identity ~/.ssh/id_ed25519
+  python -m src.obliterate run MODEL --backend runpod --gpu 4090
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from src.envutil import REPO_ROOT, load_env
 from src.jobs.heretic import run_heretic
+from src.transport.local import LocalTransport
 from src.transport.runpod import (
     DEFAULT_IMAGE,
     GPU_TYPES,
@@ -26,10 +28,15 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="obliterate")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    run = sub.add_parser("run", help="Heretic Optuna on remote GPU")
+    run = sub.add_parser("run", help="Heretic Optuna on local GPU, VPS, or RunPod")
     run.add_argument("model")
     run.add_argument("--trials", type=int, default=15)
-    run.add_argument("--backend", choices=["runpod", "ssh"], required=True)
+    run.add_argument(
+        "--backend",
+        choices=["local", "vps", "ssh", "runpod"],
+        required=True,
+        help="local = esta maquina; vps/ssh = host por SSH; runpod = alquilar GPU",
+    )
     run.add_argument("--gpu", default="4090", choices=list(GPU_TYPES.keys()))
     run.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"])
     run.add_argument("--disk", type=int, default=50)
@@ -65,9 +72,14 @@ def main(argv=None) -> int:
             )
             transport = RunpodTransport(pod, keep_alive=args.keep_alive)
             remote_dir = "/workspace/nogal-obliterate"
+        elif args.backend == "local":
+            transport = LocalTransport()
+            remote_dir = args.remote_dir
+            if remote_dir == "/workspace/nogal-obliterate":
+                remote_dir = str(REPO_ROOT / "artifacts" / "obliterate-work")
         else:
             if not args.host:
-                raise SystemExit("--host requerido con --backend ssh")
+                raise SystemExit("--host requerido con --backend vps/ssh")
             transport = SshTransport(
                 host=args.host,
                 user=args.user,
