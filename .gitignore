@@ -21,6 +21,7 @@ optimization/*.db-journal
 .cache/
 models/
 *.gguf
+artifacts/
 
 # Logs
 *.log
